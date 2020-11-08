@@ -1,0 +1,360 @@
+---
+title: "DATA622_HW1"
+author: "Mia Chen"
+date: "10/15/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(e1071)
+library(caret)
+library(class)
+```
+
+
+## Load input data dataset_hw1.csv
+
+```{r MainCode}
+path <- "file:///Users/bobo/Documents/622/HW1/15001956_p1_dataset_hw1.csv"
+data <-read.csv(path, header=TRUE, sep=',', stringsAsFactors=FALSE)
+```
+
+## Review the data, quick and easy EDA
+
+```{r}
+head(data)
+```
+
+```{r}
+tail(data)
+```
+
+### Shape of this dataset
+There are 36 observations and 3 variables in this dataset.
+```{r}
+dim(data)
+```
+
+### Manipulating column names 
+Let us change the name of the first column
+
+```{r}
+names(data)[[1]]<-'X'
+
+names(data)
+```
+
+## Are the covariates correlated?
+Since the variables are categorical, we can't review the correlation amongst independent variables
+
+
+## Distribution of Target Variable
+Let's assume our customers want us to predict label given the rest. We want to make sure the dataset have a balanced number of each class. There are 22 BLACK and 14 BLUE in the dataset, so we have a good balance.
+```{r}
+classLabels<-table(data$label) # this is the actual class distribution both test/train partitions must be close to this.
+print(classLabels)
+names(classLabels)
+```
+
+## Binary vs Multi-class Classification
+There are only two outcomes in the target variable, thus we have a binary classification.
+```{r}
+length(names(classLabels))
+ifelse(length(names(classLabels))==2,"binary classification", "multi-class classification")
+
+```
+
+
+## First Classification run
+In order to prepare for a logistic regression, we are going to replace BLACK with 0, and BLUE with 1.
+
+```{r}
+data$label[data$label == "BLACK"] <- 0
+data$label[data$label == "BLUE"] <- 1
+data$label <- as.integer(data$label)
+```
+
+
+```{r}
+options(scipen=999)
+
+glm_model<-glm(label~ ., data=data, family='binomial')
+glm_model
+```
+
+```{r}
+summary(glm_model)
+```
+
+We will reject any variable with a p-value greater than 0.05. In this case, looks like none of the coefficients are significant here.
+
+
+```{r}
+glm_probs <- predict(glm_model, type="response")
+glm_probs[1:5]
+```
+
+
+```{r}
+glm_pred <- ifelse(glm_probs < 0.5, 0, 1)
+
+table(glm_pred, data$label)
+```
+
+Now let us compute the performance of the classifier. If our model is any good it must perform
+better than 0.5.
+```{r}
+mean(glm_pred == data$label)
+```
+
+From the first run, we saw a 72% accuracy. But this is from data the model has already seen.
+
+
+# Data Partition Repeatability/Reproducibility
+Let us split our data into "random" test/train disjoint partitions. s
+```{r}
+set.seed(33)
+tstidx<-sample(1:nrow(data),0.30*nrow(data),replace=F)
+trdata<-data[-tstidx,]
+tsdata<-data[tstidx,]
+```
+Now let us run the model.
+```{r}
+glm.trmodel<-glm(label ~ X+Y, data=trdata,family='binomial')
+summary(glm.trmodel)
+predtr<-predict(glm.trmodel,trdata[,1:2],type='response')
+head(predtr)
+
+predtrclass<-ifelse(predtr<0.5, 0, 1)
+table(trdata[[3]])
+table(predtrclass)
+
+length(predtrclass)==length(trdata[[3]])
+
+(trcfm<-confusionMatrix(table(trdata[[3]],predtrclass)))
+```
+Accuracy on training data is 0.7692 indicating model is capable of learning.
+Now let us predict the class for never seen before data.
+That is our 'held out' test dataset. This is what matters to the business.
+```{r}
+predts<-predict(glm.trmodel,tsdata[,1:2],type='response')
+predtsclass<-ifelse(predts<0.5, 0, 1)
+table(predtsclass)
+table(tsdata[[3]])
+tscfm<-confusionMatrix(table(tsdata[[3]],predtsclass))
+tscfm
+```
+Accuracy on the test set (held out data or never seen before data) 
+is 0.4, and has fallen down from accuracy obtained during training phase 0.76. The drop is about 47% drop in performance and therefore we conclude Model is over-fitting.
+
+Now let us visualize our performance using ROC plots.
+We need ROCR or pROC package and there are other packages.
+I use pROC.
+```{r echo=FALSE}
+graphics.off() 
+par("mar") 
+par(mar=c(1,1,1,1))
+if(!require(pROC))install.packages('pROC')
+library(pROC)
+par(pty="s") 
+glmROC <- roc(tsdata[[3]]~ predtsclass,plot=TRUE,print.auc=TRUE,col="green",lwd =4,legacy.axes=TRUE,main="ROC Curves")
+```
+Now let us compute AUC and plot Receiver Operating Curve (ROC) using ROCR 
+package.
+```{r}
+getMetrics<-function(actual_class,predicted_response)
+{
+X=list()
+if ( require(ROCR) ) {
+auc_1=prediction(predicted_response,actual_class)
+prf=performance(auc_1, measure="tpr",x.measure="fpr")
+slot_fp=slot(auc_1,"fp")
+slot_tp=slot(auc_1,"tp")
+
+fpr=unlist(slot_fp)/unlist(slot(auc_1,"n.neg"))
+tpr=unlist(slot_tp)/unlist(slot(auc_1,"n.pos"))
+
+auc<-performance(auc_1,"auc")
+AUC<-auc@y.values[[1]]
+X=list(fpr=fpr,tpr=tpr,auc=AUC)
+}
+X
+}
+```
+time to test our utility function...
+```{r}
+L<-getMetrics(tsdata[[3]],predts)
+plot(L$fpr,L$tpr,main=" ROC Plot tpr vs fpr")
+print(paste("AUC=",L$auc,sep=''))
+```
+
+We would prefer 90 or above...yet we only have AUC=0.56 and accuracy=0.4, indicating this is not a good model.
+
+
+# Naive Bayes
+
+Looking at the training and test set distribution, they are varied significantly. Therefore, the model cannot generalize.
+```{r}
+table(trdata$label)
+table(tsdata$label)
+```
+
+Train NB model using the training set
+```{r}
+nbtr.model<-naiveBayes(label~.,data=trdata)
+```
+
+Performance over the training set
+```{r}
+nbtr.trpred<-predict(nbtr.model,trdata[,-c(3)],type='raw')
+nbtr.trclass<-unlist(apply(round(nbtr.trpred),1,which.max))-1
+nbtr.trtbl<-table(trdata[[3]], nbtr.trclass)
+tr.cfm<-confusionMatrix(nbtr.trtbl)
+tr.cfm
+```
+
+Performance over held out data, the test set
+```{r}
+nbtr.tspred<-predict(nbtr.model,tsdata[,-c(3)],type='raw')
+roc.nbtr.tspred<-nbtr.tspred[,2]
+nbtr.tsclass<-unlist(apply(round(nbtr.tspred),1,which.max))-1
+nbtr.tstbl<-table(tsdata[[3]], nbtr.tsclass)
+tst.cfm<-confusionMatrix(nbtr.tstbl)
+tst.cfm
+```
+
+Let us plot the ROCR curve and determine AUC for the e1071 standard implementation.
+```{r}
+nbtr.pred <- prediction(nbtr.tspred[,2], tsdata[[3]])
+perf_nb <- performance(nbtr.pred, measure='tpr', x.measure='fpr')
+plot(perf_nb)
+```
+
+```{r}
+auc <- performance(nbtr.pred, 'auc')
+AUC <- auc@y.values[[1]]
+AUC
+```
+
+We obtained AUC=0.52 and accuracy=0.7 from the Naive Bayes model.
+
+# kNN
+
+```{r}
+library(dplyr)
+library(gmodels)
+library(psych)
+```
+
+```{r}
+# Read data
+path <- "file:///Users/bobo/Documents/622/HW1/15001956_p1_dataset_hw1.csv"
+data2 <-read.csv(path, header=TRUE, sep=',', stringsAsFactors=FALSE)
+
+# Make a copy of dataset
+data_class <- data2
+
+# Change target to factor in preparation for knn classification
+data_class$label <- as.factor(data_class$label)
+
+# Isolate target varialb from the dataset
+label_outcome <- data_class %>% select(label)
+data_class <- data_class %>% select(-label)
+
+str(data_class)
+```
+
+We see that Y is a categorical variable that have more than two levels, so we need a dummy code.
+
+```{r}
+Y <- as.data.frame(dummy.code(data_class$Y))
+head(Y)
+```
+
+Combine new dummy variables with original dataset
+
+```{r}
+data_class <- cbind(data_class, Y)
+```
+
+Remove original variable Y that had been dummy coded
+```{r}
+data_class <- data_class %>% select(-Y)
+
+head(data_class)
+```
+
+Split and partition data into train and test sets
+```{r}
+set.seed(44)
+sample_size <- floor(0.70*nrow(data_class))
+train_ind <- sample(seq_len(nrow(data_class)), size = sample_size)
+pred_train <- data_class[train_ind,]
+pred_test <- data_class[-train_ind,]
+```
+
+Split outcome variable into training and test sets using the same partition as above
+```{r}
+outcome_train <- label_outcome[train_ind, ]
+outcome_test <- label_outcome[-train_ind, ]
+```
+
+Use caret package. Run k-NN classification.
+```{r}
+knn_model <- train(pred_train, outcome_train, method = "knn", preProcess = c("center", "scale"))
+
+knn_model
+```
+
+When k=5, we obtain the optimal model with best accuracy.
+
+Next we predict values using the knn model and compare to actual values with a confusion matrix.
+
+```{r}
+knn_pred <- predict(knn_model, newdata = pred_test)
+
+confusionMatrix(knn_pred, outcome_test)
+```
+
+Computing ROC and AUC is somewhat non-trivial as kNN do not compute probabilities and results in unreliable ROC plots.
+
+```{r}
+myControl <- trainControl(
+  method = "cv", # cross validation
+  number = 10, # 10-fold cross validation
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE,
+  verboseIter = FALSE
+)
+
+knn_control <- train(label ~., 
+                     data2,
+                     method = "knn",
+                     trControl = myControl
+                     )
+
+knn_control
+```
+
+Although we obtain highest ROC with k=7, we would still use k=5 with a slightly lower ROC score but a higher accuracy as above.
+
+```{r}
+Algorithm <- c("LR", "NB", "kNN")
+AUC <- c(0.56, 0.52, 0.75)
+Accuracy <- c(0.4, 0.7, 0.64)
+TPR <- c(0.4, 0.625, 0.67)
+FPR <- c(1-0.4, 1-0.625, 1-0.67)
+TNR <- c(0.4, 1, 0.5)
+FNR <- c(1-0.4, 1-1, 1-0.5)
+df <- data.frame(Algorithm, AUC, Accuracy, TPR, FPR, TNR, FNR)
+df
+```
+
+From the table, we will say that NB is performing better than LR and kNN since it has the highest accuracy and TNR (specificity). However, we won't be able to generalize NB. In which case, kNN might be a better choice.
+
+
+
